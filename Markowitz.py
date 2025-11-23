@@ -37,8 +37,8 @@ end = "2024-04-01"
 # Initialize df and df_returns
 df = pd.DataFrame()
 for asset in assets:
-    raw = yf.download(asset, start=start, end=end, auto_adjust = False)
-    df[asset] = raw['Adj Close']
+    raw = yf.download(asset, start=start, end=end, auto_adjust=False)
+    df[asset] = raw["Adj Close"]
 
 df_returns = df.pct_change().fillna(0)
 
@@ -62,7 +62,13 @@ class EqualWeightPortfolio:
         """
         TODO: Complete Task 1 Below
         """
+        # 等權重：所有非 SPY 資產的權重都一樣
+        n_assets = len(assets)
+        equal_w = 1.0 / n_assets
 
+        # 對所有日期都給一樣的權重
+        self.portfolio_weights.loc[:, assets] = equal_w
+        # SPY 欄位維持 NaN，後面會被填成 0
         """
         TODO: Complete Task 1 Above
         """
@@ -113,15 +119,40 @@ class RiskParityPortfolio:
         """
         TODO: Complete Task 2 Below
         """
+    def calculate_weights(self):
+        # Get the assets by excluding the specified column
+        assets = df.columns[df.columns != self.exclude]
 
+        # Calculate the portfolio weights
+        self.portfolio_weights = pd.DataFrame(index=df.index, columns=df.columns)
 
+        """
+        TODO: Complete Task 2 Below
+        """
+        # 和 MeanVariance 一樣，從 lookback+1 這天開始有完整窗口
+        for i in range(self.lookback + 1, len(df)):
+            # 使用過去 lookback 天的報酬： [i-lookback, ..., i-1]
+            window_returns = df_returns[assets].iloc[i - self.lookback : i]
 
+            # 每個資產的波動度（標準差）
+            sigma = window_returns.std()
+
+            # 避免除以 0
+            sigma.replace(0, 1e-8, inplace=True)
+
+            # inverse volatility 權重
+            inv_vol = 1.0 / sigma
+            weights = inv_vol / inv_vol.sum()
+
+            # 直接用 Series 寫入，讓欄位自動對齊
+            self.portfolio_weights.loc[df.index[i], assets] = weights
         """
         TODO: Complete Task 2 Above
         """
 
         self.portfolio_weights.ffill(inplace=True)
         self.portfolio_weights.fillna(0, inplace=True)
+
 
     def calculate_portfolio_returns(self):
         # Ensure weights are calculated
@@ -188,35 +219,43 @@ class MeanVariancePortfolio:
                 TODO: Complete Task 3 Below
                 """
 
-                # Sample Code: Initialize Decision w and the Objective
-                # NOTE: You can modify the following code
-                w = model.addMVar(n, name="w", ub=1)
-                model.setObjective(w.sum(), gp.GRB.MAXIMIZE)
+                # 決策變數：各資產權重 w_i
+                w = model.addMVar(n, lb=0.0, name="w")  # long-only
 
+                # 線性部分：w^T mu
+                linear_term = mu @ w
+
+                # 二次部分：w^T Σ w
+                quad_term = w @ Sigma @ w
+
+                # 目標：maximize w^T mu - (gamma / 2) * w^T Σ w
+                model.setObjective(
+                    linear_term - (gamma / 2.0) * quad_term,
+                    gp.GRB.MAXIMIZE,
+                )
+
+                # 預算約束：sum w_i = 1
+                model.addConstr(w.sum() == 1.0, name="budget")
                 """
                 TODO: Complete Task 3 Above
                 """
                 model.optimize()
 
-                # Check if the status is INF_OR_UNBD (code 4)
+                # Check status
                 if model.status == gp.GRB.INF_OR_UNBD:
                     print(
                         "Model status is INF_OR_UNBD. Reoptimizing with DualReductions set to 0."
                     )
                 elif model.status == gp.GRB.INFEASIBLE:
-                    # Handle infeasible model
                     print("Model is infeasible.")
                 elif model.status == gp.GRB.INF_OR_UNBD:
-                    # Handle infeasible or unbounded model
                     print("Model is infeasible or unbounded.")
 
-                if model.status == gp.GRB.OPTIMAL or model.status == gp.GRB.SUBOPTIMAL:
-                    # Extract the solution
-                    solution = []
+                solution = [0.0] * n
+                if model.status in (gp.GRB.OPTIMAL, gp.GRB.SUBOPTIMAL):
                     for i in range(n):
                         var = model.getVarByName(f"w[{i}]")
-                        # print(f"w {i} = {var.X}")
-                        solution.append(var.X)
+                        solution[i] = var.X
 
         return solution
 
@@ -277,6 +316,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     judge = AssignmentJudge()
-    
+
     # All grading logic is protected in grader.py
     judge.run_grading(args)
